@@ -36,6 +36,15 @@ if [ "$needs_update" = true ]; then
   async_exec "$SNAP_DESKTOP_RUNTIME/usr/lib/$ARCH/libgtk-3-0/gtk-query-immodules-3.0" > "$GTK_IM_MODULE_FILE"
 fi
 
-# FIXME: override the notification backend until we sort out appId/desktop file name matching issues
-export GNOTIFICATION_BACKEND=freedesktop
-export NOTIFY_IGNORE_PORTAL=1
+# override the notification backend when detecting an old version of the desktop portal,
+# that is known not to match the snap appId correctly
+function configure_notification_backend() {
+  if ! gdbus call --session -d org.freedesktop.portal.Desktop \
+                              -o /org/freedesktop/portal/desktop \
+                              -m org.freedesktop.DBus.Properties.Get \
+                              "org.freedesktop.portal.GlobalShortcuts" \
+                              "version" >/dev/null; then
+    async_export GNOTIFICATION_BACKEND=freedesktop NOTIFY_IGNORE_PORTAL=1
+  fi
+}
+async_exec_with_exports configure_notification_backend
