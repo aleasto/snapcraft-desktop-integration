@@ -16,14 +16,52 @@ function ensure_dir_exists() {
 }
 
 declare -A PIDS
+declare -A ASYNC_EXPORT_READ_FDS
+
+# Use async_export NAME=value from a function started by async_exec_with_exports.
+function async_export() {
+  [ -n "${ASYNC_EXPORT_WRITE_FD:-}" ] || return 2
+  export "$@" || return
+  printf '%s\0' "$@" >&"$ASYNC_EXPORT_WRITE_FD"
+}
+
 function async_exec() {
   "$@" &
   PIDS[$!]=$*
 }
+
+function async_exec_with_exports() {
+  # Process substitution uses stdout for the export pipe, so preserve the
+  # command's stdout on a separate descriptor.
+  local command_stdout_fd export_read_fd export_write_fd
+  exec {command_stdout_fd}>&1
+  exec {export_read_fd}< <(
+    exec {export_write_fd}>&1
+    ASYNC_EXPORT_WRITE_FD=$export_write_fd "$@" >&"$command_stdout_fd"
+  )
+
+  local pid=$!
+  exec {command_stdout_fd}>&-
+  PIDS[$pid]=$*
+  ASYNC_EXPORT_READ_FDS[$pid]=$export_read_fd
+}
+
 function wait_for_async_execs() {
+  local status export_read_fd assignment
   for pid in "${!PIDS[@]}"
   do
-    wait "$pid" && continue || echo "ERROR: ${PIDS[$pid]} exited abnormally with status $?"
+    export_read_fd=${ASYNC_EXPORT_READ_FDS[$pid]:-}
+    if [ -n "$export_read_fd" ]; then
+      # NUL delimiters preserve spaces, newlines, and other shell characters.
+      while IFS= read -r -d '' -u "$export_read_fd" assignment; do
+        export "$assignment"
+      done
+      exec {export_read_fd}<&-
+    fi
+
+    status=0
+    wait "$pid" || status=$?
+    [ "$status" -eq 0 ] || echo "ERROR: ${PIDS[$pid]} exited abnormally with status $status"
   done
 }
 
